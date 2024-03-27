@@ -3,7 +3,8 @@ import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { PrismaClient } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import { NATS_SERVICE } from 'src/config';
-import { ChangeStatusDto, CreateOrderDto, OrderPaginationDto } from './dto';
+import { ChangeStatusDto, CreateOrderDto, OrderPaginationDto, PaidOrderDto } from './dto';
+import { OrderWithProducts } from './interfaces/order-with-products.interface';
 
 @Injectable()
 export class OrdersService extends PrismaClient implements OnModuleInit {
@@ -131,5 +132,40 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
     if (order.status === status) return order;
 
     return this.order.update({ where: { id }, data: { status } });
+  }
+
+  async createPaymentSession(order: OrderWithProducts) {
+    try {
+      const paymentSession = await firstValueFrom(
+        this.client.send('create.payment.session', {
+          orderId: order.id,
+          currency: 'usd',
+          items: order.items.map(({ name, quantity, price }) => ({ name, quantity, price })),
+        }),
+      );
+
+      return paymentSession;
+    } catch (error) {
+      throw new RpcException({ statusCode: HttpStatus.BAD_REQUEST, message: 'Check logs for more details' });
+    }
+  }
+
+  async paidOrder(paidOrderDto: PaidOrderDto) {
+    this.logger.log('Order paid');
+
+    const order = await this.order.update({
+      where: { id: paidOrderDto.orderId },
+      data: {
+        status: 'PAID',
+        paid: true,
+        paidAt: new Date(),
+        stipeChargeId: paidOrderDto.stripePaymentId,
+        OrderReceipt: {
+          create: {
+            receiptUrl: paidOrderDto.receiptUrl,
+          },
+        },
+      },
+    });
   }
 }
